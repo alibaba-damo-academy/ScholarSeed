@@ -40,6 +40,14 @@ func sandboxMetadataLog(name string) bool {
 }
 
 func sandboxMetadataACL(before sandboxSecurity, user, group string, directory bool, readers ...string) ([]byte, error) {
+	return sandboxMaintenanceACL(before, user, group, directory, sandboxAncestorACL, readers...)
+}
+
+func sandboxBinACL(before sandboxSecurity, user string) ([]byte, error) {
+	return sandboxMaintenanceACL(before, user, "", true, sandboxSharedReadACL)
+}
+
+func sandboxMaintenanceACL(before sandboxSecurity, user, group string, directory bool, mode sandboxACLMode, readers ...string) ([]byte, error) {
 	// Validate framing first, then recognize only the native metadata group's
 	// existing RWX/DELETE allowance. Never add or expand a sandbox-group ACE.
 	normalized := before
@@ -79,7 +87,7 @@ func sandboxMetadataACL(before sandboxSecurity, user, group string, directory bo
 		}
 		// Inherit-only ACEs are still policy on future metadata/bin children.
 		// Ancestor traversal validation alone intentionally skips those entries.
-		recognized := aclpolicy.RecoveryWriter(sid, user, before.owner) || (group != "" && sid == group)
+		recognized := mode.allowsExistingReader(access) || aclpolicy.RecoveryWriter(sid, user, before.owner) || (group != "" && sid == group)
 		for _, reader := range readers {
 			if sid == reader && access&^uint32(toolReadExecute) == 0 {
 				recognized = true
@@ -109,7 +117,7 @@ func sandboxMetadataACL(before sandboxSecurity, user, group string, directory bo
 	if position != len(normalized.acl) || int(binary.LittleEndian.Uint16(normalized.acl[2:4])) != position {
 		return nil, sandboxCheckFailure(sandboxRuleACL, errors.New("sandbox metadata ACL has trailing data"))
 	}
-	if err := validateSandboxACL(normalized, user, group, sandboxAncestorACL, readers...); err != nil {
+	if err := validateSandboxACL(normalized, user, group, mode, readers...); err != nil {
 		return nil, err
 	}
 	if sufficient {
@@ -217,29 +225,9 @@ func sandboxMetadataApply(home, user, group string, changes []sandboxMetadataCha
 	return nil
 }
 
-func sandboxMetadataAncestors(home, user, group string, readers ...string) (failure error) {
-	object := sandboxObjectProfile
-	defer func() { failure = sandboxMetadataFailure(object, failure) }()
-	for index, path := range []string{filepath.Dir(filepath.Dir(home)), filepath.Dir(home), home} {
-		object = []string{sandboxObjectProfile, sandboxObjectProduct, sandboxObjectHome}[index]
-		handle, err := sandboxOpen(path, toolReadControl)
-		if err != nil {
-			return err
-		}
-		before, err := sandboxSnapshot(handle)
-		syscall.CloseHandle(handle)
-		if err != nil {
-			return err
-		}
-		mode := sandboxAncestorACL
-		if index == 0 {
-			mode = sandboxProfileACL
-		}
-		if err = validateSandboxACL(before, user, group, mode, readers...); err != nil {
-			return err
-		}
-	}
-	return nil
+func sandboxMetadataAncestors(home, user, group string, readers ...string) error {
+	ancestor, err := sandboxCheckAncestors(filepath.Dir(filepath.Dir(home)), home, user, group, readers...)
+	return sandboxMetadataFailure(ancestor.object, err)
 }
 
 func sandboxPrepareMetadata(home, user, group string, readers ...string) (failure error) {
@@ -248,7 +236,7 @@ func sandboxPrepareMetadata(home, user, group string, readers ...string) (failur
 	if err := sandboxMetadataAncestors(home, user, group, readers...); err != nil {
 		return err
 	}
-	if err := sandboxPrepareBin(home, user, group, readers...); err != nil {
+	if err := sandboxPrepareBin(home, user); err != nil {
 		return err
 	}
 	target := filepath.Join(home, sandboxMetadata)
@@ -319,7 +307,7 @@ func sandboxPrepareMetadata(home, user, group string, readers ...string) (failur
 // Native elevated setup cannot create this sibling beneath the original user's
 // private Home. Prepare only the directory; native code owns helper contents and
 // its protected RX sandbox policy. Never traverse or change binary descendants.
-func sandboxPrepareBin(home, user, group string, readers ...string) (failure error) {
+func sandboxPrepareBin(home, user string) (failure error) {
 	defer func() { failure = sandboxMetadataFailure(sandboxObjectBin, failure) }()
 	target := filepath.Join(home, ".sandbox-bin")
 	if _, err := createSandboxDirectory(target, user); err != nil {
@@ -334,12 +322,7 @@ func sandboxPrepareBin(home, user, group string, readers ...string) (failure err
 	if err != nil {
 		return err
 	}
-	// Unlike writable metadata, the native bin group is only a reader.
-	allowed := append([]string{}, readers...)
-	if group != "" {
-		allowed = append(allowed, group)
-	}
-	acl, err := sandboxMetadataACL(before, user, "", true, allowed...)
+	acl, err := sandboxBinACL(before, user)
 	if err != nil {
 		return err
 	}

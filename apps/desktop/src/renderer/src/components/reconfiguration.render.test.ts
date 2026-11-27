@@ -1,38 +1,37 @@
 import assert from 'node:assert/strict'
-import test, { after } from 'node:test'
-import { fileURLToPath } from 'node:url'
+import test, { after, before } from 'node:test'
 import path from 'node:path'
-import { chromium, expect, type Page } from '@playwright/test'
-import react from '@vitejs/plugin-react'
-import { renderServers } from '../../../test-helpers/render.ts'
+import { expect, type Page } from '@playwright/test'
+import { renderFixture } from '../../../test-helpers/render.ts'
 import {
   RECONFIGURATION_REQUEST_TIMEOUT_MS,
   RECONFIGURATION_POLL_MS,
   RECONFIGURATION_MAX_FAILURES,
 } from '../../../reconfiguration.ts'
 
-const servers = renderServers({ after })
+let fixture: Awaited<ReturnType<typeof renderFixture>>
+
+before(
+  async () => {
+    fixture = await renderFixture(path.resolve(import.meta.dirname, '..'))
+  },
+  { timeout: 60_000 }
+)
+
+after(async () => {
+  await fixture?.close()
+})
 
 async function withFixture(operation: (page: Page, url: string) => Promise<void>): Promise<void> {
-  const server = await servers.create({
-    cacheKey: 'reconfiguration',
-    configFile: false,
-    root: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
-    plugins: [react()],
-    server: { host: '127.0.0.1', port: 0 },
-  })
-  await server.listen()
-  const browser = await chromium.launch()
+  const context = await fixture.browser.newContext()
   try {
-    const page = await browser.newPage()
-    page.setDefaultTimeout(10000)
-    await operation(
-      page,
-      new URL('/components/reconfiguration.render.fixture.html', server.resolvedUrls!.local[0]).href
-    )
+    const page = await context.newPage()
+    page.setDefaultTimeout(10_000)
+    page.setDefaultNavigationTimeout(30_000)
+    const url = new URL('/components/reconfiguration.render.fixture.html', fixture.url)
+    await operation(page, url.href)
   } finally {
-    await browser.close()
-    await server.close()
+    await context.close()
   }
 }
 
@@ -121,6 +120,20 @@ test(
     })
   }
 )
+
+test('a Windows policy rejection gives permission guidance for the blocked switch', async () => {
+  await withFixture(async (page, url) => {
+    await page.route('**/api/serve/sessions/*/runtime/reconfigure**', (route) =>
+      route.fulfill({
+        json: { ...operation('restart_required'), error: 'windows_sandbox_policy_rejected' },
+      })
+    )
+    await page.goto(url)
+    const status = page.getByTestId('runtime-reconfigure-status')
+    await expect(status).toContainText('沙箱文件的访问权限')
+    await expect(status).not.toContainText('重新启动')
+  })
+})
 
 for (const [state, message] of [
   ['applied', '运行环境已自动切换'],

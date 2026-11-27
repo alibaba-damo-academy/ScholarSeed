@@ -48,7 +48,40 @@ const (
 	sandboxPrivateACL
 	sandboxRepairACL
 	sandboxProfileACL
+	sandboxSharedReadACL
 )
+
+type sandboxAncestor struct {
+	path, object, stage string
+	mode                sandboxACLMode
+}
+
+func (mode sandboxACLMode) allowsExistingReader(mask uint32) bool {
+	return mode == sandboxSharedReadACL && mask&^uint32(toolReadExecute) == 0
+}
+
+// All recovery paths qualify the same three directories before touching native state.
+func sandboxCheckAncestors(profile, home, user, group string, readers ...string) (sandboxAncestor, error) {
+	for _, ancestor := range [...]sandboxAncestor{
+		{profile, sandboxObjectProfile, sandboxStageProfile, sandboxProfileACL},
+		{filepath.Dir(home), sandboxObjectProduct, sandboxStageProduct, sandboxSharedReadACL},
+		{home, sandboxObjectHome, sandboxStageHome, sandboxAncestorACL},
+	} {
+		handle, err := sandboxOpen(ancestor.path, toolReadControl)
+		if err != nil {
+			return ancestor, err
+		}
+		snapshot, err := sandboxSnapshot(handle)
+		syscall.CloseHandle(handle)
+		if err != nil {
+			return ancestor, err
+		}
+		if err := validateSandboxACL(snapshot, user, group, ancestor.mode, readers...); err != nil {
+			return ancestor, err
+		}
+	}
+	return sandboxAncestor{}, nil
+}
 
 func (s sandboxSecurity) fingerprint() string {
 	return Hash(append([]byte(fmt.Sprintf("%s:%s:%d:", s.owner, s.identity, s.control)), s.acl...))
@@ -142,7 +175,7 @@ func sandboxObjectSnapshot(handle syscall.Handle, directory bool) (sandboxSecuri
 
 func validateSandboxACL(snapshot sandboxSecurity, user, group string, mode sandboxACLMode, readers ...string) (err error) {
 	defer func() { err = aclpolicy.Reject("recovery_writer", "recovery", "policy_denied", err, "") }()
-	ancestor := mode == sandboxAncestorACL || mode == sandboxProfileACL
+	ancestor := mode == sandboxAncestorACL || mode == sandboxProfileACL || mode == sandboxSharedReadACL
 	if len(snapshot.acl) < toolACLHeaderBytes {
 		return sandboxCheckFailure(sandboxRuleACL, errors.New("sandbox ACL header is truncated"))
 	}
@@ -179,7 +212,7 @@ func validateSandboxACL(snapshot sandboxSecurity, user, group string, mode sandb
 				position += size
 				continue
 			}
-			reader := false
+			reader := mode.allowsExistingReader(mask)
 			if ancestor && sandboxAncestorTraversal(mask, ace[1]) {
 				reader = true
 			}
@@ -605,7 +638,7 @@ func (p Policy) RecoverSandbox(home, version, executable string, parentID uint32
 			return result, err
 		}
 		stage = sandboxStageTarget
-		if err := sandboxEnsureBinOwner(home, user, group, func(fingerprint string) error {
+		if err := sandboxEnsureBinOwner(home, user, func(fingerprint string) error {
 			stage = sandboxStageElevation
 			child, startErr := startWorker(self, []string{sandboxHomeFlag, home, sandboxVersionFlag, version, sandboxRuntimeFlag, executable, sandboxParentFlag, fmt.Sprint(parentID), sandboxSnapshotFlag, sandboxBinSnapshotPrefix + fingerprint}, true)
 			if startErr != nil {
@@ -621,7 +654,7 @@ func (p Policy) RecoverSandbox(home, version, executable string, parentID uint32
 				return sandboxWorkerFailure(code)
 			}
 			return nil
-		}, readers...); err != nil {
+		}); err != nil {
 			return result, err
 		}
 	}
@@ -688,26 +721,9 @@ func (p Policy) RecoverSandbox(home, version, executable string, parentID uint32
 			return result, err
 		}
 	}
-	for index, ancestor := range []struct{ path, stage string }{
-		{profile, sandboxStageProfile}, {filepath.Dir(home), sandboxStageProduct}, {home, sandboxStageHome},
-	} {
+	if ancestor, err := sandboxCheckAncestors(profile, home, user, group, readers...); err != nil {
 		stage = ancestor.stage
-		ancestorHandle, openErr := sandboxOpen(ancestor.path, toolReadControl)
-		if openErr != nil {
-			return result, openErr
-		}
-		snapshot, readErr := sandboxSnapshot(ancestorHandle)
-		syscall.CloseHandle(ancestorHandle)
-		if readErr != nil {
-			return result, readErr
-		}
-		mode := sandboxAncestorACL
-		if index == 0 {
-			mode = sandboxProfileACL
-		}
-		if err = validateSandboxACL(snapshot, user, group, mode, readers...); err != nil {
-			return result, err
-		}
+		return result, err
 	}
 	stage = sandboxStageTarget
 	if err = validateSandboxACL(before, user, group, sandboxRepairACL, readers...); err != nil {

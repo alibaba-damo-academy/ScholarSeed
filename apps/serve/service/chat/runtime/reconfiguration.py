@@ -16,6 +16,7 @@ from scholarseed_runtime.contract.resource import (
     RESOURCE_HOST_CONFIGURATION_UNCERTAIN,
     RESOURCE_WAIT_TIMEOUT,
 )
+from scholarseed_runtime.contract.sandbox import SANDBOX_POLICY_ERROR
 from service.platform.activity import (
     Activities,
     ActivityDomain,
@@ -158,6 +159,9 @@ class HostReconfiguration:
         if self._closed:
             raise ValueError(PREPARATION_CLOSED)
         if self.state is CommandState.RESTART_REQUIRED:
+            previous = self.current(session_id, user_id)
+            if previous is not None and previous["error"] == SANDBOX_POLICY_ERROR:
+                raise ValueError(SANDBOX_POLICY_ERROR)
             raise ValueError(RESOURCE_HOST_CONFIGURATION_UNCERTAIN)
         if self.pending:
             raise ValueError(RESOURCE_HOST_BUSY)

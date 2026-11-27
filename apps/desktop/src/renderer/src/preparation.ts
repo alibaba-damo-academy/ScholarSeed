@@ -19,7 +19,15 @@ const HTTP_CONFLICT = 409
 
 type PreparationOutcome = Pick<RuntimePreparation, 'state' | 'error'>
 
+export function isSandboxPolicyRejection(operation?: PreparationOutcome): boolean {
+  return (
+    (operation?.state === 'restart_required' || operation?.state === 'rejected') &&
+    operation.error === 'windows_sandbox_policy_rejected'
+  )
+}
+
 export function runtimePreparationFailure(operation?: PreparationOutcome) {
+  if (isSandboxPolicyRejection(operation)) return feedback('conversation', 'sandbox.policyRejected')
   if (operation?.state === 'restart_required')
     return feedback('components', 'runtimeSwitch.restartRequired')
   if (operation?.state === 'unsupported') return feedback('components', 'runtimeSwitch.unsupported')
@@ -362,7 +370,9 @@ export class RuntimePreparationController {
           throw new Error(PREPARATION_INSTANCE_CHANGED_ERROR)
         }
         if (
-          (!job.request.warmupOnly || operation.state === 'applied') &&
+          (!job.request.warmupOnly ||
+            operation.state === 'applied' ||
+            isSandboxPolicyRejection(operation)) &&
           preparationContextMatches(this.dependencies.snapshot(), job.context)
         ) {
           this.dependencies.publish(operation, job.context)

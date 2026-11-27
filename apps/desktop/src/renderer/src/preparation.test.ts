@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
-import { RECONFIGURATION_ERRORS } from '../../reconfiguration.ts'
+import { HOST_CONFIGURATION_UNCERTAIN, RECONFIGURATION_ERRORS } from '../../reconfiguration.ts'
 import type { RuntimePreparation } from './api'
 import {
   PREPARATION_INSTANCE_CHANGED_ERROR,
@@ -34,6 +34,25 @@ test('preparation failure feedback follows the recovery state, never a guessed m
   assert.equal(runtimePreparationFailure().key, 'runtimePreparation.unknown')
 })
 
+test('confirmed sandbox policy rejection explains the permission check and preserves the restart fence', () => {
+  const error = 'windows_sandbox_policy_rejected'
+  for (const result of [
+    runtimePreparationFailure({ state: 'rejected', error }),
+    runtimePreparationFailure({ state: 'restart_required', error }),
+    runtimePreparationRequestFailure(Object.assign(new Error(error), { status: 409 })),
+  ]) {
+    assert.equal(result.ns, 'conversation')
+    assert.equal(result.key, 'sandbox.policyRejected')
+  }
+  assert.equal(
+    runtimePreparationFailure({
+      state: 'restart_required',
+      error: HOST_CONFIGURATION_UNCERTAIN,
+    }).key,
+    'runtimeSwitch.restartRequired'
+  )
+})
+
 test('preparation distinguishes definite request rejection from a lost response', () => {
   const statusError = (status: number, message = 'private-token') =>
     Object.assign(new Error(message), { status })
@@ -52,6 +71,11 @@ test('preparation distinguishes definite request rejection from a lost response'
     runtimePreparationRequestFailure(statusError(409, 'runtime_host_configuration_uncertain')).key,
     'runtimeSwitch.restartRequired'
   )
+  const policy = runtimePreparationRequestFailure(
+    statusError(409, 'windows_sandbox_policy_rejected')
+  )
+  assert.equal(policy.ns, 'conversation')
+  assert.equal(policy.key, 'sandbox.policyRejected')
   for (const error of [
     new TypeError('connection lost'),
     new SyntaxError('invalid response'),
@@ -249,6 +273,20 @@ test('a completed preparation is never reused as an unverified future admission'
     [true, false]
   )
   assert.deepEqual(probe.publications, [first, second])
+})
+
+test('startup publishes a confirmed Windows policy rejection for the current composer', async () => {
+  const probe = fixture()
+  probe.handlers.prepare = async () => ({
+    ...probe.operation('restart_required'),
+    error: 'windows_sandbox_policy_rejected',
+  })
+  const result = await probe.controller.prepare('model-a', false, true)
+  assert.deepEqual(probe.publications, [result])
+  const message = runtimePreparationForegroundFailure(result)
+  assert.equal(message?.ns, 'conversation')
+  assert.equal(message?.key, 'sandbox.policyRejected')
+  assert.equal(result.state, 'restart_required')
 })
 
 test('foreground preparation cannot join a deferred startup warmup', async () => {
