@@ -96,7 +96,7 @@
   },
   "sandbox": {
     "toolProbeFailed": "A built-in tool check failed in the Windows sandbox. Your message has not been sent. Send feedback with the tool check logs to help identify the cause.",
-    "policyRejected": "The Windows sandbox did not pass a security check. Ask your administrator to check the installation and directory permissions, or submit feedback with diagnostic logs.",
+    "policyRejected": "Windows sandbox permission or security policy checks failed. Ask your administrator to check the installation and sandbox file permissions, or send feedback.",
     "setupCancelled": "System authorization for Windows sandbox setup was cancelled. Send again and complete authorization when the system requests it.",
     "passwordPolicyRejected": "Windows rejected the sandbox account password (error 2245) because it does not meet system policy. Your message has not been sent. Automatic retries have stopped. You can send again to retry initialization. If it fails again, ask your administrator to review the password policy or send feedback; do not weaken security policies."
   },

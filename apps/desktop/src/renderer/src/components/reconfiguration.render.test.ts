@@ -130,7 +130,7 @@ test('a Windows policy rejection gives permission guidance for the blocked switc
     )
     await page.goto(url)
     const status = page.getByTestId('runtime-reconfigure-status')
-    await expect(status).toContainText('目录权限')
+    await expect(status).toContainText('沙箱文件的访问权限')
     await expect(status).not.toContainText('重新启动')
   })
 })

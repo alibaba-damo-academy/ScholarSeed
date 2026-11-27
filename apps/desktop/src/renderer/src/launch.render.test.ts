@@ -3511,7 +3511,7 @@ test('startup warmup shows a Windows policy rejection before first send', async 
     await startupReady(page)
     assert.equal((await warmup).postDataJSON().warmup_only, true)
     control.finish('restart_required', 'windows_sandbox_policy_rejected')
-    await expect(page.getByTestId('runtime-preparation')).toContainText('目录权限')
+    await expect(page.getByTestId('runtime-preparation')).toContainText('沙箱文件的访问权限')
     await page.getByTestId('composer-input').fill('first message')
     await expect(page.getByTestId('composer-send')).toBeDisabled()
   })
