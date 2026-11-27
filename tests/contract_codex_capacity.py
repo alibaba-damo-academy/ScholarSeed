@@ -669,16 +669,28 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(self.hosts[0].closed)
             self.assertTrue(runtime._pool.execution_configured)
 
-    async def test_sandbox_policy_rejection_preserves_blocked_prewarm_receipt(self) -> None:
-        failure = AppServerError(TEST_SECRET_VALUE, safe_error=SANDBOX_POLICY_ERROR)
-        self.host_hook = lambda host: setattr(host, "start_error", failure)
+    async def test_prewarm_reports_sandbox_policy_and_rechecks_on_next_request(self) -> None:
         with self.warmup_provider() as (runtime, request, _compiled):
-            with self.assertLogs(RESOURCE_LIFECYCLE_LOGGER, level="ERROR"):
-                result = await runtime.prewarm(request("target"))
-        self.assertIs(result.state, CommandState.RESTART_REQUIRED)
-        self.assertEqual(result.safe_error, SANDBOX_POLICY_ERROR)
-        self.assertFalse(result.correlation_id)
-        self.assertEqual(len(self.hosts), 1)
+            failure = AppServerError(TEST_SECRET_VALUE, safe_error=SANDBOX_POLICY_ERROR)
+            self.host_hook = lambda host: setattr(host, "start_error", failure)
+            rejected = await runtime.prewarm(request("first"))
+            self.assertIs(rejected.state, CommandState.REJECTED)
+            self.assertEqual(rejected.safe_error, SANDBOX_POLICY_ERROR)
+            self.assertFalse(rejected.correlation_id)
+            self.assertEqual(len(self.hosts), 1)
+            self.host_hook = lambda _host: None
+            self.assertIs((await runtime.prewarm(request("first"))).state, CommandState.APPLIED)
+
+    async def test_sandbox_denial_after_host_reset_keeps_uncertain_fence(self) -> None:
+        with self.warmup_provider() as (runtime, request, _compiled):
+            await runtime.prewarm(request("first"))
+            failure = AppServerError(TEST_SECRET_VALUE, safe_error=SANDBOX_POLICY_ERROR)
+            self.host_hook = lambda host: setattr(host, "start_error", failure)
+            with self.assertRaises(AppServerError):
+                await runtime.reconfigure(request("target"))
+            outcome = await runtime.prewarm(request("first"))
+            self.assertIs(outcome.state, CommandState.RESTART_REQUIRED)
+            self.assertEqual(outcome.safe_error, RESOURCE_HOST_CONFIGURATION_UNCERTAIN)
 
     async def test_provider_failure_after_reset_fences_default_prewarm(self) -> None:
         with self.warmup_provider() as (runtime, request, _compiled):

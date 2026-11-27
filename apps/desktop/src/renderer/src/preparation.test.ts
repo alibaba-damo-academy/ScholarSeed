@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
-import { RECONFIGURATION_ERRORS } from '../../reconfiguration.ts'
+import { HOST_CONFIGURATION_UNCERTAIN, RECONFIGURATION_ERRORS } from '../../reconfiguration.ts'
 import type { RuntimePreparation } from './api'
 import {
   PREPARATION_INSTANCE_CHANGED_ERROR,
@@ -32,6 +32,25 @@ test('preparation failure feedback follows the recovery state, never a guessed m
     assert.equal(JSON.stringify(result).includes('private-token'), false)
   }
   assert.equal(runtimePreparationFailure().key, 'runtimePreparation.unknown')
+})
+
+test('confirmed sandbox policy rejection explains the permission check and preserves the restart fence', () => {
+  const error = 'windows_sandbox_policy_rejected'
+  for (const result of [
+    runtimePreparationFailure({ state: 'rejected', error }),
+    runtimePreparationFailure({ state: 'restart_required', error }),
+    runtimePreparationRequestFailure(Object.assign(new Error(error), { status: 409 })),
+  ]) {
+    assert.equal(result.ns, 'conversation')
+    assert.equal(result.key, 'sandbox.policyRejected')
+  }
+  assert.equal(
+    runtimePreparationFailure({
+      state: 'restart_required',
+      error: HOST_CONFIGURATION_UNCERTAIN,
+    }).key,
+    'runtimeSwitch.restartRequired'
+  )
 })
 
 test('preparation distinguishes definite request rejection from a lost response', () => {

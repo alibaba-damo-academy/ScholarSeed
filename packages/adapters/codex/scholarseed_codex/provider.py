@@ -399,12 +399,10 @@ class CodexRuntimeProvider:
         except RetiredExecutionAuthority as error:
             return CommandReceipt(command, CommandState.REJECTED, safe_error=error.safe_error)
         except AppServerError as error:
+            if not reconfigure and error.safe_error == SANDBOX_POLICY_ERROR:
+                return CommandReceipt(command, CommandState.REJECTED, safe_error=error.safe_error)
             if reconfigure and error.safe_error == RESOURCE_HOST_BUSY:
                 return CommandReceipt(command, CommandState.REJECTED, safe_error=error.safe_error)
-            if not reconfigure and error.safe_error == SANDBOX_POLICY_ERROR:
-                return CommandReceipt(
-                    command, CommandState.RESTART_REQUIRED, safe_error=SANDBOX_POLICY_ERROR
-                )
             if error.safe_error not in {
                 RESOURCE_HOST_CONFIGURATION_CONFLICT,
                 RESOURCE_HOST_CONFIGURATION_UNCERTAIN,
